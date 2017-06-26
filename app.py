@@ -7,7 +7,8 @@ from werkzeug.exceptions import BadRequest
 from threading import Thread
 
 
-app = flask.Flask('grapes')
+app = flask.Flask(__name__)
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['SQLALCHEMY_DATABASE_URI'] = os.environ['DATABASE_URL']
 db = SQLAlchemy(app)
 
@@ -15,7 +16,7 @@ db = SQLAlchemy(app)
 class Job(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     url = db.Column(db.String, nullable=False)
-    completed = db.Column(db.Boolean, default=False),
+    completed = db.Column(db.Boolean, default=False)
     html = db.Column(db.String)
 
     def execute(self):
