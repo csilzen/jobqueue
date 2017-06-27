@@ -1,7 +1,7 @@
 import flask
 import time
 import os
-import urllib
+import requests
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.exceptions import BadRequest
 from threading import Thread
@@ -20,15 +20,28 @@ class Job(db.Model):
     html = db.Column(db.String)
 
     def execute(self):
+        """
+        Executes a given job: scrapes the HTML from the URL.
+        Also handles erroneous URLs by setting the HTML field to an error message.
+        """
+
         if self.completed:
             raise Exception('Error trying to execute already completed task: Job {}'.format(self.id))
         else:
-            self.html = urllib.urlopen(self.url).read()
+            try:
+                self.html = requests.get(self.url).text
+            except Exception as e:
+                self.html = "Could not retrieve HTML for URL. Error message: {}".format(e)
+
             self.completed = True
             db.session.commit()
 
 
 class JobQueue():
+    """
+    Implements a FIFO queue.
+    """
+
     def __init__(self):
         self.queue = []
 
@@ -45,10 +58,15 @@ class JobQueue():
 
     def run(self):
         while True:
+            # time.sleep(1) assumes that we're getting a low volume of requests, so we can let the processor idle.
             time.sleep(1)
             queueHead = self.pop()
             if queueHead:
-                queueHead.execute()
+                # it is necessary to use app.app_context() here because this is a multithreaded application.
+                # (this thread could otherwise not access the db session, which runs single-threadedly.)
+                with app.app_context():
+                    item = db.session.query(Job).get(queueHead)
+                    item.execute()
 
 
 global_job_queue = JobQueue()
@@ -56,31 +74,45 @@ global_job_queue = JobQueue()
 
 @app.route('/submit', methods=['POST'])
 def submit():
-    data = flask.request.get_data()
+    """
+    Handle calls to the submit route. Assumes that the user passes a JSON blob
+    with 'url' as a key and the url to scrape as a value.
+    """
+
+    data = flask.request.form
     if 'url' in data:
         new_job = Job(url=data['url'])
         db.session.add(new_job)
         db.session.commit()
-        global_job_queue.push(new_job)
-        return new_job.id
+        global_job_queue.push(new_job.id)
+        return str(new_job.id)
     else:
         raise BadRequest('POST payload must contain a "url" key.')
 
 
 @app.route('/status', methods=['GET'])
 def status():
+    """
+    Handle calls to the status route. Assumes that the user passes a JSON blob
+    with 'jobId' as a key and the id of the job as a value.
+    """
+
     data = flask.request.args
     if 'jobId' in data:
         job_id = data['jobId']
         job_db_row = db.session.query(Job).get(job_id)
-        if job_db_row and job_db_row.completed:
-            return job_db_row.html
+        if job_db_row:
+            if job_db_row.completed:
+                return job_db_row.html
+            else:
+                return 'Job {} is incomplete'.format(job_id)
         else:
-            return 'Job {} is incomplete'.format(job_id)
+            return "There is no Job with id {} in the Jobs database.".format(job_id)
+
     else:
         raise BadRequest('GET payload must contain a "job_id" key.')
 
 
 if __name__ == '__main__':
-    Thread(target=(lambda: app.run(debug=True))).start()
+    Thread(target=(lambda: app.run(debug=False))).start()
     Thread(target=(lambda: global_job_queue.run())).start()
